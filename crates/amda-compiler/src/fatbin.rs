@@ -340,7 +340,8 @@ fn decode_utf8_ptx(raw: &[u8]) -> Result<String, CompileError> {
     Ok(ptx.to_owned())
 }
 
-/// Builds an uncompressed single-PTX NVIDIA fatbin container using spec-accurate entry offsets.
+/// Builds an uncompressed single-PTX fatbin container using publicly documented compiler ABI
+/// entry offsets (e.g., Clang/LLVM offloading bundler conventions).
 pub fn build_uncompressed_ptx_fatbin(ptx: &str) -> Vec<u8> {
     let mut raw = ptx.as_bytes().to_vec();
     raw.push(0);
@@ -372,7 +373,7 @@ fn build_ptx_fatbin_entry(payload_bytes: &[u8], flags: u64, uncompressed_size: u
     out[6..8].copy_from_slice(&16u16.to_le_bytes()); // header_size
     out[8..16].copy_from_slice(&(total_entry_size as u64).to_le_bytes());
 
-    // Fatbin entry header (64 bytes, NVIDIA offsets)
+    // Fatbin entry header (64 bytes, publicly documented Clang/LLVM fatbin container ABI offsets)
     let e = &mut out[16..16 + entry_hdr_size];
     e[0..2].copy_from_slice(&FATBIN_KIND_PTX.to_le_bytes());
     e[2..4].copy_from_slice(&1u16.to_le_bytes()); // version

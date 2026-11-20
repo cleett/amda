@@ -4,9 +4,9 @@ Thank you for your interest in contributing to **AMDA**.
 
 ## Clean-Room Policy
 
-To protect users and contributors, AMDA is developed under a strict **clean-room policy**. Contributors **must never** copy, decompile, or derive code from proprietary NVIDIA CUDA, cuBLAS, cuBLASLt, NVML, or closed-source vendor headers, binaries, or internal documentation.
+To protect users and contributors, AMDA is developed under clean-room engineering practices (without claiming formal third-party legal certification). Contributors **must never** copy, decompile, or derive code from proprietary NVIDIA CUDA, cuBLAS, cuBLASLt, NVML, or closed-source vendor headers, binaries, or internal documentation.
 
-All interfaces, lowering passes, kernel descriptors, and runtime shims must be original clean-room implementations derived strictly from public specifications (PTX ISA documentation, ELF64/AMDHSA specifications, Linux `/dev/kfd` UAPI headers, and AMDA's own clean-room C headers in `crates/*/include/`).
+All interfaces, lowering passes, kernel descriptors, and runtime shims must be original implementations derived strictly from public specifications (PTX ISA documentation, ELF64/AMDHSA specifications, Linux `/dev/kfd` UAPI headers), publicly documented open-source compiler ABI conventions (such as LLVM/Clang), and AMDA's own clean-room C headers in `crates/*/include/`.
 
 ## Licensing & Contributor Rights (CLA Notice)
 

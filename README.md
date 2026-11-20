@@ -60,3 +60,7 @@ clang -std=c99 -Wall -Wextra -Werror \
 ## License & Contributing
 
 AMDA's open-core crates are licensed under the [Apache License, Version 2.0](LICENSE) (see also [NOTICE](NOTICE)). Please review [CONTRIBUTING.md](CONTRIBUTING.md) for our clean-room policy, contributor certification / CLA notice, and pre-PR verification checks.
+
+### Trademarks & Non-Affiliation
+
+AMDA is an independent open-source project and is not affiliated with, sponsored by, or endorsed by NVIDIA Corporation or Advanced Micro Devices, Inc. `CUDA`, `cuBLAS`, `NVML`, and `nvcc` are trademarks or registered trademarks of NVIDIA Corporation; `AMD`, `Radeon`, `Instinct`, and `ROCm` are trademarks or registered trademarks of Advanced Micro Devices, Inc. All product names and trademarks remain the property of their respective owners and are used solely to describe runtime compatibility and hardware targets.

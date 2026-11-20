@@ -7,7 +7,7 @@ use core::fmt;
 pub enum CompileError {
     /// Input fatbin header or wrapper magic did not match supported formats.
     InvalidFatbin(String),
-    /// Fatbin entry uses LZ4/Zlib/Zstd compression (not supported in Milestone 0).
+    /// Fatbin entry uses an unsupported compression format (only uncompressed and LZ4 are supported).
     CompressedFatbinUnsupported,
     /// Fatbin container held no PTX entry.
     MissingPtxInFatbin,
@@ -36,7 +36,10 @@ impl fmt::Display for CompileError {
         match self {
             Self::InvalidFatbin(msg) => write!(f, "invalid fatbin container: {msg}"),
             Self::CompressedFatbinUnsupported => {
-                write!(f, "compressed NVIDIA fatbin payloads require Milestone 2 decompression")
+                write!(
+                    f,
+                    "unsupported compressed fatbin payload (only uncompressed and LZ4 entries are supported)"
+                )
             }
             Self::MissingPtxInFatbin => write!(f, "fatbin container contained no PTX payload"),
             Self::LexError { line, col, message } => {

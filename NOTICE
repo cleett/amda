@@ -3,3 +3,10 @@ Copyright 2026 AMDA Contributors
 
 This product includes software developed as part of the AMDA project
 (https://github.com/cleett/amda).
+
+Trademarks & Non-Affiliation Notice:
+AMDA is an independent open-source project and is not affiliated with,
+sponsored by, or endorsed by NVIDIA Corporation or Advanced Micro Devices, Inc.
+CUDA, cuBLAS, NVML, and nvcc are trademarks or registered trademarks of
+NVIDIA Corporation. AMD, Radeon, Instinct, and ROCm are trademarks or
+registered trademarks of Advanced Micro Devices, Inc.
