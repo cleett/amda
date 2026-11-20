@@ -1,6 +1,6 @@
 # AMDA Architecture Specification
 
-AMDA is a CUDA-compatible, AMD-native GPU computing stack built from scratch in pure Rust (`std`-only, zero external crate dependencies). Its goal is twofold: provide zero-friction drop-in compatibility for CUDA binaries, `nvcc` fatbins, and cuBLAS/NVML libraries today, while establishing a post-CUDA compilation and execution foundation designed to surpass both ROCm and closed CUDA libraries.
+AMDA is a CUDA-compatible, AMD-native GPU computing stack built from scratch in pure Rust (`std`-only, zero external crate dependencies). Its goal is twofold: deliver zero-ROCm UX, sub-millisecond dispatch, and zero-allowlist AMD SKU coverage today, while establishing a compilation and execution foundation designed to beat CUDA in TCO / tokens-per-dollar on high-VRAM and high-bandwidth AMD silicon (see [ROADMAP.md](ROADMAP.md)).
 
 ---
 
@@ -86,4 +86,4 @@ amda-cli ──────────────┼──► amda-cuda ──
 - **Sprint 2 (Complete)**: Expanded PTX ops (`bf16`, `f16x2`, `v2`/`v4`, `.func` inlining, `.local`/`.const`/`.extern .shared`, math/bitwise/atomic/`shfl.sync`/`vote.sync`), Wave32-on-Wave64 CDNA legalization, full CUDA Driver/Runtime surface (`cudaGetDeviceProperties`, pinned host memory, events, occupancy, context stack, `cuPointerGetAttributes`), CUDA sample tests, and `install_dropin_shims.sh`.
 - **Sprint 3 (Complete)**: `amda-cublas` (`cublasSgemm`, `cublasHgemm`, `cublasGemmEx`, strided batched GEMM on GPU), `amda-nvml`, GGML Q4_0 × Q8_1 (`dp4a`+`prmt`+`shfl.sync`) quantized MatVec across RDNA3 & CDNA3, and Dual-Backend Differential Oracle (`amda diff`).
 - **Sprint 4 (Complete)**: Real Cross-Kernel IR Fusion (`amda-compiler/src/fusion.rs`) + automatic `ExecutionGraph` pipeline fusion, `amda bench` suite + `docs/BENCHMARKS.md`, and standalone C99 Mini-LLM MVP (`examples/c_llama_mvp.c`).
-- **Next (On Live AMD Hardware)**: End-to-end validation of compiled `.text` + `/dev/kfd` dispatch on physical RX 7900 XTX (`gfx1100`), R7H / 780M APU (`gfx1103`), and Instinct MI300X (`gfx942`), plus Clang CUDA `.cu` frontend and hardware MFMA/WMMA Tile IR lowering.
+- **Next (Milestones M1–M5)**: Live `/dev/kfd` validation on Instinct MI300X (`gfx942`), CUDA 12 ABI parity + hardware SDMA queues for unmodified `llama.cpp`, MFMA/WMMA/FP8 Tile IR lowering, multi-SKU RDNA/Strix Halo packaging, and source `.cu` frontend + 8× MI300X xGMI scaling. See [ROADMAP.md](ROADMAP.md) for concrete deliverables and exit gates.

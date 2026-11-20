@@ -8,7 +8,8 @@ AMDA bridges existing CUDA applications, `nvcc` fatbins, and cuBLAS/NVML workloa
 
 ## Documentation
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 5-layer stack architecture, Tiered JIT, Cross-Kernel Fusion, and roadmap.
+- [docs/ROADMAP.md](docs/ROADMAP.md) — Focused TCO & zero-ROCm execution roadmap (Milestones M0–M5, non-goals, and quantitative exit gates).
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 5-layer stack architecture, Tiered JIT, Cross-Kernel Fusion, and crate graph.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — Reproducible Tier 0 vs Tier 1 JIT, AQL Graph, Fusion, cuBLAS, and GGML Q4_0 benchmark methodology and numbers.
 - [docs/COMPARISON.md](docs/COMPARISON.md) — Competitive analysis vs. ROCm/HIP, ZLUDA, SCALE, and BarraCUDA/Booth.
 - [docs/HARDWARE_TESTING.md](docs/HARDWARE_TESTING.md) — AMD GPU buying/rental guide and local LLM capability matrix.
