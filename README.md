@@ -56,3 +56,7 @@ clang -std=c99 -Wall -Wextra -Werror \
   examples/c_llama_mvp.c -Ldist/lib -lamda_cuda -lamda_cublas -lamda_nvml -lm \
   -Wl,-rpath,$(pwd)/dist/lib -o /tmp/amda_c_llama_mvp && /tmp/amda_c_llama_mvp
 ```
+
+## License & Contributing
+
+AMDA's open-core crates are licensed under the [Apache License, Version 2.0](LICENSE) (see also [NOTICE](NOTICE)). Please review [CONTRIBUTING.md](CONTRIBUTING.md) for our clean-room policy, contributor certification / CLA notice, and pre-PR verification checks.
