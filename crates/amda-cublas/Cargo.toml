@@ -1,0 +1,19 @@
+[package]
+name = "amda-cublas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drop-in cuBLAS (cublas*) C ABI library backed by AMDA GPU GEMM kernels"
+
+[lib]
+name = "amda_cublas"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }
+amda-hal = { path = "../amda-hal" }
+amda-runtime = { path = "../amda-runtime" }
+
+[dev-dependencies]
+amda-compiler = { path = "../amda-compiler" }
+amda-cuda = { path = "../amda-cuda" }

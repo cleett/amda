@@ -1,0 +1,9 @@
+[package]
+name = "amda-compiler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AMDA PTX/Fatbin frontend, AMDA Core/Tile IR lowering, LLVM AMDGPU IR emitter, and SHA-256 cache"
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }

@@ -1,0 +1,11 @@
+[package]
+name = "amda-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AMDA core AMD-native GPU runtime: slab memory pool, VMM registry, streams/events, module loader, and execution graphs"
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }
+amda-compiler = { path = "../amda-compiler" }
+amda-hal = { path = "../amda-hal" }

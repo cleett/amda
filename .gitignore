@@ -1,0 +1,7 @@
+/target
+/dist
+*.o
+.DS_Store
+examples/c_vector_add
+examples/c_nvcc_abi
+examples/c_llama_mvp

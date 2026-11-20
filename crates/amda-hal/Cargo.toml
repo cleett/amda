@@ -1,0 +1,10 @@
+[package]
+name = "amda-hal"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AMDA direct hardware abstraction layer: AQL packets/rings, Linux KFD bindings, and Virtual AMD GPU"
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }
+amda-compiler = { path = "../amda-compiler" }

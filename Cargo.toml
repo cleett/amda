@@ -1,0 +1,19 @@
+[workspace]
+members = [
+    "crates/amda-elf",
+    "crates/amda-compiler",
+    "crates/amda-hal",
+    "crates/amda-runtime",
+    "crates/amda-cuda",
+    "crates/amda-cublas",
+    "crates/amda-nvml",
+    "crates/amda-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+authors = ["AMDA Contributors"]
+repository = "https://github.com/amda-gpu/amda"

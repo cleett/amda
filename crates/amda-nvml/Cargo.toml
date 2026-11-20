@@ -1,0 +1,15 @@
+[package]
+name = "amda-nvml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drop-in NVML (libnvidia-ml) C ABI library backed by AMDA hardware/runtime discovery"
+
+[lib]
+name = "amda_nvml"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }
+amda-hal = { path = "../amda-hal" }
+amda-runtime = { path = "../amda-runtime" }

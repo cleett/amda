@@ -1,0 +1,18 @@
+[package]
+name = "amda-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AMDA command-line diagnostic, compiler, and end-to-end demo tool"
+
+[[bin]]
+name = "amda"
+path = "src/main.rs"
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }
+amda-compiler = { path = "../amda-compiler" }
+amda-hal = { path = "../amda-hal" }
+amda-runtime = { path = "../amda-runtime" }
+amda-cuda = { path = "../amda-cuda" }
+amda-cublas = { path = "../amda-cublas" }

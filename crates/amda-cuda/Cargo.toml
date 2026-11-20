@@ -1,0 +1,16 @@
+[package]
+name = "amda-cuda"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Drop-in CUDA Driver (cu*) and Runtime (cuda*) C ABI library backed by AMDA"
+
+[lib]
+name = "amda_cuda"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+amda-elf = { path = "../amda-elf" }
+amda-compiler = { path = "../amda-compiler" }
+amda-hal = { path = "../amda-hal" }
+amda-runtime = { path = "../amda-runtime" }
