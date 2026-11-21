@@ -67,7 +67,8 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (llama.cpp 61-virtual 
 - **Key Work**:
   - **Exact CUDA 12 ABI Struct Parity**: Expand [CudaDeviceProp](../crates/amda-cuda/src/types.rs) and [amda_cuda.h](../crates/amda-cuda/include/amda_cuda.h) to match NVIDIA CUDA 12 binary struct offsets/sizes exactly (today's 26-field struct will misalign compiled third-party binaries calling `cudaGetDeviceProperties`).
   - **Expand C ABI Surface for `llama.cpp`**: Implement missing Driver/Runtime/cuBLAS symbols observed when linking `llama.cpp` (including `cudaStreamBeginCapture` / `EndCapture`, `cudaGraphExecUpdate`, multi-TU `__cudaRegisterFatBinary`, `cudaMemcpy2D` / `cudaMemcpy2DAsync`, `cudaMallocAsync` / `cudaFreeAsync`, `cudaFuncSetAttribute`, `cudaGetSymbolAddress`, `cublasGemmBatchedEx`, and minimal `cublasLt` entrypoints).
-  - **Hardware SDMA Copy Engine**: Replace host-mapped CPU `memcpy` in `KfdBackend::{copy_htod, copy_dtoh, copy_dtod}` ([kfd.rs](../crates/amda-hal/src/kfd.rs))—especially `copy_dtod`'s GPU→host `Vec`→GPU bounce—with real `KFD_IOC_QUEUE_TYPE_SDMA` async hardware DMA packets and signals.
+  - **Hardware SDMA Copy Engine & Compute–DMA Overlap**: Replace host-mapped CPU `memcpy` in `KfdBackend::{copy_htod, copy_dtoh, copy_dtod}` ([kfd.rs](../crates/amda-hal/src/kfd.rs))—especially `copy_dtod`'s GPU→host `Vec`→GPU bounce—with real `KFD_IOC_QUEUE_TYPE_SDMA` async hardware DMA rings overlapped concurrently with AQL compute queues via `BarrierAndPacket` signal chains.
+  - **Static Activation Lifetime Aliasing**: Analyze graph buffer lifespans across [graph.rs](../crates/amda-runtime/src/graph.rs) and [memory.rs](../crates/amda-runtime/src/memory.rs) to alias non-overlapping activation buffers in shared physical HBM3 ranges, freeing maximum VRAM headroom for KV caches.
   - **Non-Tensor-Core PTX & Fatbin Completeness**: Add any missing PTX `dp4a`/scalar instructions/modifiers encountered in `61-virtual` `llama.cpp` GGML CUDA kernels and Zlib/Zstd decompression in [fatbin.rs](../crates/amda-compiler/src/fatbin.rs).
 - **Exit Gate**:
   - Unmodified **`llama.cpp` source built with `-DCMAKE_CUDA_ARCHITECTURES="61-virtual" -DGGML_CUDA_FORCE_CUBLAS=ON`** (`llama-cli` / `llama-bench`) runs a 7B–8B `Q4_0` GGUF model end-to-end on MI300X via `LD_LIBRARY_PATH=dist/lib` with token output parity against CPU reference.
@@ -79,9 +80,9 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (llama.cpp 61-virtual 
 **Goal**: Ship the core memory-bandwidth and dispatch-latency wins first—beating H100 on >80 GB `$/token` and beating stock ROCm on launch- and intermediate-HBM-bound decode without blocking on year-long dense prefill scheduling.
 
 - **Key Work**:
-  - **Baseline Tile IR + Matrix Lowering (`amda-compiler`)**: Add first-class `MFMA` (`v_mfma_*` + AGPR allocation) for CDNA (`gfx908`/`90a`/`942`), `WMMA` for RDNA3/4 (`gfx11xx`/`12xx`), native FP8 (`e4m3`/`e5m2`), and `sm_80` `mma.sync`/`mmq` legalization for `llama.cpp` (`50–65%` of `hipBLASLt` baseline LDS-tiled GEMM).
-  - **Bandwidth-Saturating Decode Kernels (`amda-cublas` / runtime)**: Replace the scalar 16×16 triple-loop GEMM in [crates/amda-cublas/src/kernels.rs](../crates/amda-cublas/src/kernels.rs) with tuned LDS-tiled MFMA/WMMA GEMMs plus bandwidth-saturating Q4/Q8/FP8 quantized GEMV kernels tailored for small-`M` (`M = 1..16`) and MoE shapes.
-  - **Decode Fusion & `<2–5 µs` AQL Graphs ([fusion.rs](../crates/amda-compiler/src/fusion.rs))**: Expand cross-kernel fusion to **GEMV + bias/activation epilogue, RMSNorm, and RoPE/SwiGLU** inside pre-baked AQL `ExecutionGraph` replay (`<2–5 µs` host dispatch overhead per step).
+  - **High-Level Rust Tensor-Contraction / Tile IR (`amda-compiler`)**: Model `(M, N, K)` tiles, `64 KB` LDS double-buffering, AGPR fragments, in-register quantized (`Q4`/`Q8`) & block-scaled FP8 (`e4m3`/`e5m2`) dequantization, and epilogue fusion natively in Rust *before* lowering to `@llvm.amdgcn.mfma.*` (`gfx908`/`90a`/`942`), `WMMA` (`gfx11xx`/`12xx`), and `sm_80` `mma.sync`/`mmq` legalization (`50–65%` of `hipBLASLt` baseline GEMM).
+  - **AOT Pre-Compiled HSACO Bundles & Decode Kernels (`amda-cublas` / runtime)**: Replace the scalar 16×16 triple-loop GEMM in [crates/amda-cublas/src/kernels.rs](../crates/amda-cublas/src/kernels.rs) with embedded AOT pre-compiled HSACO bundles (zero cold-start JIT lag on serving nodes) covering LDS-tiled MFMA/WMMA GEMMs plus bandwidth-saturating in-register Q4/Q8/FP8 GEMV kernels tailored for small-`M` (`M = 1..16`) and MoE shapes.
+  - **Micro-Lazy Stream Windowing, Fusion, & `<2–5 µs` AQL Dispatch ([stream.rs](../crates/amda-runtime/src/stream.rs), [fusion.rs](../crates/amda-compiler/src/fusion.rs))**: Buffer eager CUDA stream launches up to a micro-lazy flush window (before sync/`DtoH`/event queries) so eager callers gain automatic **GEMV + bias/activation, RMSNorm, and RoPE/SwiGLU fusion** alongside single-doorbell batched AQL ring submissions and pre-baked `ExecutionGraph` replay (`<2–5 µs` host dispatch overhead).
 - **Exit Gate**:
   - **Baseline Matrix & Graph Speed**: AMDA baseline LDS-tiled BF16/FP16/FP8 GEMMs reach **≥50–65% of `hipBLASLt`**, with `<2–5 µs` AQL graph launch overhead.
   - **70B Weight-Streaming Decode (MI300X HBM3 Physics)**: On 70B `Q4`/`BF16` decode, achieve **~3.8–4.2 TB/s** sustained weight streaming (**≥98–105% of stock `llama.cpp-hip`**, bounded realistically by MI300X's ~4.1–4.5 TB/s STREAM Triad ceiling) with zero `/opt/rocm` userspace installed, and deliver **≥25–35% better tokens/sec per dollar** on **1× MI300X (@ $1.99/hr)** vs. **2× H100 (80 GB)**.
@@ -93,8 +94,8 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (llama.cpp 61-virtual 
 **Goal**: Close the dense compute-bound prefill and long-context attention gap without delaying M3a's decode TCO release.
 
 - **Key Work**:
-  - **LLVM MFMA Scheduling & Warp-Pipelining**: Implement wave-group pipelining, `amdgcn_sched_group_barrier` / `iglp_opt` hints, LDS bank-conflict swizzling, and shape autotuning to break LLVM AMDGPU scheduler MFMA stalls (or expose an optional opt-in `hipBLASLt` prefill delegate while native Tile IR matures).
-  - **Fused FlashAttention & Full GEMM+Epilogue Fusion**: Add tiled MFMA/WMMA FlashAttention (prefill + GQA decode) and GEMM+epilogue fusion in [fusion.rs](../crates/amda-compiler/src/fusion.rs).
+  - **LLVM MFMA Scheduling & Warp-Pipelining**: Extend the Rust Tensor-Contraction IR lowering with wave-group pipelining, `amdgcn_sched_group_barrier` / `iglp_opt` scheduling hints, XCC-aware L2/LDS bank-conflict swizzling, and shape autotuning to break LLVM AMDGPU scheduler MFMA stalls (or expose an optional opt-in `hipBLASLt` prefill delegate while native Tile IR matures).
+  - **Fused FlashAttention & Full GEMM+Epilogue Fusion**: Add AOT-bundled tiled MFMA/WMMA FlashAttention (prefill + GQA decode) and full GEMM+epilogue fusion in [fusion.rs](../crates/amda-compiler/src/fusion.rs).
 - **Exit Gate**:
   - AMDA `BF16`/`FP16`/`FP8` large dense prefill GEMMs (`M >= 1024`) achieve **≥75–85% of stock `hipBLASLt` / `AITER` TFLOP/s** (natively or with optional prefill delegate), and FlashAttention matches or beats ROCm `llama.cpp` TTFT cleanly.
 
@@ -105,9 +106,9 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (llama.cpp 61-virtual 
 
 - **Key Work**:
   - Hardware validation across **4 ISA families** on live Linux `/dev/kfd`: `gfx942` (MI300X/MI325X), `gfx1100` (RX 7900 XTX), `gfx1200`/`1201` (RX 9060/9070 XT), and `gfx1103`/`gfx1151` (Radeon 780M / 128 GB Strix Halo APUs).
-  - Implement true **zero-copy unified-memory (`GTT | COHERENT`) pointer aliasing** on APUs (`unified_memory = true`) to skip `HtoD`/`DtoH` staging copies entirely.
+  - Implement true **zero-copy unified-memory (`USERPTR` / `GTT | COHERENT`) pointer aliasing** on APUs (`unified_memory = true`), mapping pinned host memory directly into GPUVM via `KFD_IOC_ALLOC_MEM_FLAGS_USERPTR` ([kfd.rs](../crates/amda-hal/src/kfd.rs)) to skip `HtoD`/`DtoH` staging copies entirely.
   - **Two-Layer Distribution (resolves LLVM size vs. `<20 MB` core)**:
-    - **`<20 MB` Core Runtime** (`dist/lib` shims + `/dev/kfd` HAL + pre-compiled embedded HSACOs for built-in MFMA/WMMA/GEMV/Attention kernels + pure-Rust Tier 0 JIT for user PTX; **no `/opt/rocm`**).
+    - **`<20 MB` Core Runtime** (`dist/lib` shims + `/dev/kfd` HAL + embedded **AOT pre-compiled HSACO kernel bundles** for built-in MFMA/WMMA/GEMV/Attention shapes + pure-Rust Tier 0 JIT for arbitrary user PTX; **zero `/opt/rocm`**).
     - **Optional Tier 1 LLVM Sidecar**: Discovers host LLVM (`opt`/`llc`/`ld.lld`) or ships an optional stripped AMDGPU-only compiler sidecar (`~50–80 MB`) when dynamic Tier 1 LLVM promotion of arbitrary user PTX is desired.
 - **Exit Gate**:
   - The **`<20 MB` core drop-in package** passes `c_llama_mvp` + `llama.cpp` inference benchmarks across CDNA3, RDNA3, RDNA4, and RDNA3/3.5 APU Linux boxes with **zero** `HSA_OVERRIDE_GFX_VERSION`, **zero** `/opt/rocm` userspace libraries, and zero manual SKU overrides.
