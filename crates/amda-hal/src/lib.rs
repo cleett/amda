@@ -16,8 +16,8 @@ pub use backend::{CodeObjectId, DeviceBackend, KernelHandle, QueueId, SignalId};
 pub use device::{DeviceInfo, HardwareFeatures};
 pub use error::HalError;
 pub use kfd::{
-    compute_kfd_queue_buffer_sizes, decode_gfx_target_version, device_info_from_kfd,
-    parse_kfd_mem_bank_properties, parse_kfd_topology_properties,
+    aql_ring_has_space, compute_kfd_queue_buffer_sizes, decode_gfx_target_version,
+    device_info_from_kfd, parse_kfd_mem_bank_properties, parse_kfd_topology_properties,
     patch_kernel_descriptor_entry_offset, resolve_kernel_text_entry_offset,
     select_kfd_alloc_flags, try_open_kfd_backend, HsaSignalStruct, KfdGpuVaAllocator,
     KfdNodeProps, KfdQueueBufferSizes,
@@ -249,6 +249,19 @@ local_mem_size 0
         assert_ne!(dgpu_flags & kfd::KFD_IOC_ALLOC_MEM_FLAGS_VRAM, 0);
         assert_ne!(dgpu_flags & kfd::KFD_IOC_ALLOC_MEM_FLAGS_PUBLIC, 0);
         assert_eq!(dgpu_flags & kfd::KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE, 0);
+
+        let dgpu_ctrl_flags = select_kfd_alloc_flags(false, false, true);
+        assert_ne!(dgpu_ctrl_flags & kfd::KFD_IOC_ALLOC_MEM_FLAGS_GTT, 0);
+        assert_ne!(dgpu_ctrl_flags & kfd::KFD_IOC_ALLOC_MEM_FLAGS_COHERENT, 0);
+        assert_eq!(dgpu_ctrl_flags & kfd::KFD_IOC_ALLOC_MEM_FLAGS_VRAM, 0);
+
+        // AQL ring wrap backpressure (`read_dispatch_id` vs `write_idx`)
+        assert!(aql_ring_has_space(0, 0, 64));
+        assert!(aql_ring_has_space(63, 0, 64));
+        assert!(!aql_ring_has_space(64, 0, 64));
+        assert!(aql_ring_has_space(64, 1, 64));
+        assert!(aql_ring_has_space(5, u64::MAX - 10, 64));
+        assert!(!aql_ring_has_space(u64::MAX.wrapping_add(65), u64::MAX, 64));
 
         // Page-aligned GPUVM VA allocator + neighbor coalescing
         let mut alloc = KfdGpuVaAllocator::new(0x10_0000, 0x20_0000);

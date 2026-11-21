@@ -267,9 +267,13 @@ pub const AMDKFD_IOC_UNMAP_MEMORY_FROM_GPU: u32 =
 const _: u32 = ioc(IOC_NONE, KFD_IOCTL_BASE, 0, 0);
 
 /// Selects `AMDKFD_IOC_ALLOC_MEMORY_OF_GPU` flags for APU vs discrete GPU and coherent/executable uses.
-pub const fn select_kfd_alloc_flags(is_apu: bool, executable: bool, host_visible: bool) -> u32 {
+pub const fn select_kfd_alloc_flags(
+    is_apu: bool,
+    executable: bool,
+    host_coherent_gtt: bool,
+) -> u32 {
     let mut flags = KFD_IOC_ALLOC_MEM_FLAGS_WRITABLE | KFD_IOC_ALLOC_MEM_FLAGS_NO_SUBSTITUTE;
-    if is_apu || host_visible {
+    if is_apu || host_coherent_gtt {
         flags |= KFD_IOC_ALLOC_MEM_FLAGS_GTT | KFD_IOC_ALLOC_MEM_FLAGS_COHERENT;
     } else {
         flags |= KFD_IOC_ALLOC_MEM_FLAGS_VRAM | KFD_IOC_ALLOC_MEM_FLAGS_PUBLIC;
@@ -278,6 +282,11 @@ pub const fn select_kfd_alloc_flags(is_apu: bool, executable: bool, host_visible
         flags |= KFD_IOC_ALLOC_MEM_FLAGS_EXECUTABLE;
     }
     flags
+}
+
+/// Returns `true` when pushing at `write_idx` will not overwrite an unread AQL ring slot.
+pub const fn aql_ring_has_space(write_idx: u64, read_idx: u64, ring_cap: usize) -> bool {
+    write_idx.wrapping_sub(read_idx) < (ring_cap as u64)
 }
 
 /// Patches a 64-byte `AmdhsaKernelDescriptor` so `kernel_code_entry_byte_offset` (`[16..24]`)
@@ -672,6 +681,7 @@ pub mod linux {
         ring_cap: usize,
         ring_host: usize,
         wptr_host: usize,
+        rptr_host: usize,
         doorbell_page_host: usize,
         doorbell_offset_in_page: usize,
         write_idx: Mutex<u64>,
@@ -901,17 +911,90 @@ pub mod linux {
             size: usize,
             align: usize,
             executable: bool,
-            host_visible: bool,
+            host_coherent_gtt: bool,
         ) -> Result<KfdAllocation, HalError> {
             self.alloc_kfd_buffer_with_flags(
                 device,
                 size,
                 align,
                 executable,
-                host_visible,
+                host_coherent_gtt,
                 0,
                 1,
             )
+        }
+
+        /// Allocates device VRAM (`VRAM | PUBLIC`) on discrete GPUs (or coherent GTT on APUs),
+        /// falling back to `GTT | COHERENT` if the VRAM aperture cannot be host-mmapped (e.g. small BAR).
+        fn alloc_dgpu_vram_with_host_fallback(
+            &self,
+            device: usize,
+            size: usize,
+            align: usize,
+            executable: bool,
+        ) -> Result<KfdAllocation, HalError> {
+            let rec = self.alloc_kfd_buffer(device, size, align, executable, false)?;
+            if rec.host_addr == 0 {
+                let _ = self.free_kfd_buffer(rec.gpu_va);
+                return self.alloc_kfd_buffer(device, size, align, executable, true);
+            }
+            Ok(rec)
+        }
+
+        /// Allocates CPU/GPU coherent control memory (`GTT | COHERENT | UNCACHED`, plus optional
+        /// `AQL_QUEUE_MEM` 2x VA mapping) with clean fallbacks for older kernel/TTM combinations.
+        fn alloc_coherent_control_buffer(
+            &self,
+            device: usize,
+            size: usize,
+            align: usize,
+            aql_queue_mem: bool,
+        ) -> Result<KfdAllocation, HalError> {
+            if aql_queue_mem {
+                self.alloc_kfd_buffer_with_flags(
+                    device,
+                    size,
+                    align,
+                    false,
+                    true,
+                    KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED | KFD_IOC_ALLOC_MEM_FLAGS_AQL_QUEUE_MEM,
+                    2,
+                )
+                .or_else(|_| {
+                    self.alloc_kfd_buffer_with_flags(
+                        device,
+                        size,
+                        align,
+                        false,
+                        true,
+                        KFD_IOC_ALLOC_MEM_FLAGS_AQL_QUEUE_MEM,
+                        2,
+                    )
+                })
+                .or_else(|_| {
+                    self.alloc_kfd_buffer_with_flags(
+                        device,
+                        size,
+                        align,
+                        false,
+                        true,
+                        KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED,
+                        1,
+                    )
+                })
+                .or_else(|_| self.alloc_kfd_buffer(device, size, align, false, true))
+            } else {
+                self.alloc_kfd_buffer_with_flags(
+                    device,
+                    size,
+                    align,
+                    false,
+                    true,
+                    KFD_IOC_ALLOC_MEM_FLAGS_UNCACHED,
+                    1,
+                )
+                .or_else(|_| self.alloc_kfd_buffer(device, size, align, false, true))
+            }
         }
 
         fn alloc_kfd_buffer_with_flags(
@@ -1211,7 +1294,7 @@ pub mod linux {
         }
 
         fn alloc_vram(&self, device: usize, size: usize, align: usize) -> Result<u64, HalError> {
-            let rec = self.alloc_kfd_buffer(device, size, align, false, true)?;
+            let rec = self.alloc_dgpu_vram_with_host_fallback(device, size, align, false)?;
             Ok(rec.gpu_va)
         }
 
@@ -1268,45 +1351,31 @@ pub mod linux {
             let q_sizes =
                 compute_kfd_queue_buffer_sizes(rt.cu_count, rt.max_waves_per_cu, rt.num_xcc);
 
-            let ring_alloc = self
-                .alloc_kfd_buffer_with_flags(
-                    device,
-                    ring_bytes,
-                    PAGE_SIZE,
-                    false,
-                    true,
-                    KFD_IOC_ALLOC_MEM_FLAGS_AQL_QUEUE_MEM,
-                    2,
-                )
-                .or_else(|_| self.alloc_kfd_buffer(device, ring_bytes, PAGE_SIZE, false, true))?;
-            let ptrs_alloc = match self.alloc_kfd_buffer(device, PAGE_SIZE, PAGE_SIZE, false, true)
-            {
-                Ok(a) => a,
-                Err(e) => {
-                    let _ = self.free_kfd_buffer(ring_alloc.gpu_va);
-                    return Err(e);
-                }
-            };
-            let eop_alloc = match self.alloc_kfd_buffer(
-                device,
-                q_sizes.eop_bytes,
-                PAGE_SIZE,
-                false,
-                true,
-            ) {
-                Ok(a) => a,
-                Err(e) => {
-                    let _ = self.free_kfd_buffer(ring_alloc.gpu_va);
-                    let _ = self.free_kfd_buffer(ptrs_alloc.gpu_va);
-                    return Err(e);
-                }
-            };
+            let ring_alloc =
+                self.alloc_coherent_control_buffer(device, ring_bytes, PAGE_SIZE, true)?;
+            let ptrs_alloc =
+                match self.alloc_coherent_control_buffer(device, PAGE_SIZE, PAGE_SIZE, false) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let _ = self.free_kfd_buffer(ring_alloc.gpu_va);
+                        return Err(e);
+                    }
+                };
+            let eop_alloc =
+                match self.alloc_kfd_buffer(device, q_sizes.eop_bytes, PAGE_SIZE, false, false) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        let _ = self.free_kfd_buffer(ring_alloc.gpu_va);
+                        let _ = self.free_kfd_buffer(ptrs_alloc.gpu_va);
+                        return Err(e);
+                    }
+                };
             let ctx_alloc = match self.alloc_kfd_buffer(
                 device,
                 q_sizes.ctx_save_restore_bytes,
                 PAGE_SIZE,
                 false,
-                true,
+                false,
             ) {
                 Ok(a) => a,
                 Err(e) => {
@@ -1415,6 +1484,7 @@ pub mod linux {
                     ring_cap,
                     ring_host: ring_alloc.host_addr,
                     wptr_host: ptrs_alloc.host_addr,
+                    rptr_host: ptrs_alloc.host_addr + 64,
                     doorbell_page_host: db_ptr as usize,
                     doorbell_offset_in_page: in_page_off,
                     write_idx: Mutex::new(0),
@@ -1453,7 +1523,7 @@ pub mod linux {
         }
 
         fn create_signal(&self, initial_value: i64) -> Result<SignalId, HalError> {
-            let alloc = self.alloc_kfd_buffer(0, PAGE_SIZE, 64, false, true)?;
+            let alloc = self.alloc_coherent_control_buffer(0, PAGE_SIZE, 64, false)?;
             if alloc.host_addr == 0 {
                 let _ = self.free_kfd_buffer(alloc.gpu_va);
                 return Err(HalError::KfdError(
@@ -1569,7 +1639,7 @@ pub mod linux {
                 rodata_bytes.len().div_ceil(256) * 256
             };
             let total_size = rodata_padded + text_bytes.len();
-            let alloc = self.alloc_kfd_buffer(device, total_size, PAGE_SIZE, true, true)?;
+            let alloc = self.alloc_dgpu_vram_with_host_fallback(device, total_size, PAGE_SIZE, true)?;
             if alloc.host_addr == 0 {
                 let _ = self.free_kfd_buffer(alloc.gpu_va);
                 return Err(HalError::KfdError(
@@ -1712,7 +1782,11 @@ pub mod linux {
             let q = guard
                 .get(&queue.0)
                 .ok_or(HalError::InvalidHandle("KFD queue"))?;
-            if q.ring_host == 0 || q.wptr_host == 0 || q.doorbell_page_host == 0 {
+            if q.ring_host == 0
+                || q.wptr_host == 0
+                || q.rptr_host == 0
+                || q.doorbell_page_host == 0
+            {
                 return Err(HalError::KfdError(
                     "KFD queue pointers not mapped".to_owned(),
                 ));
@@ -1720,6 +1794,30 @@ pub mod linux {
 
             let mut w_guard = q.write_idx.lock().expect("queue wptr lock");
             let idx = *w_guard;
+            let rptr_atom = unsafe { &*(q.rptr_host as *const AtomicU64) };
+            if !aql_ring_has_space(idx, rptr_atom.load(Ordering::Acquire), q.ring_cap) {
+                let start = Instant::now();
+                let timeout = Duration::from_millis(self.watchdog_ms);
+                let mut spins = 0u32;
+                while !aql_ring_has_space(idx, rptr_atom.load(Ordering::Acquire), q.ring_cap) {
+                    if start.elapsed() >= timeout {
+                        let observed_rptr = rptr_atom.load(Ordering::Acquire);
+                        return Err(HalError::ExecutionError(format!(
+                            "AQL queue {} full after {}ms timeout (write_idx={idx}, read_idx={observed_rptr}, cap={})",
+                            q.kfd_queue_id, self.watchdog_ms, q.ring_cap
+                        )));
+                    }
+                    spins += 1;
+                    if spins < 256 {
+                        core::hint::spin_loop();
+                    } else if spins < 1024 {
+                        std::thread::yield_now();
+                    } else {
+                        std::thread::sleep(Duration::from_micros(50));
+                    }
+                }
+            }
+
             let slot_idx = (idx as usize) & (q.ring_cap - 1);
             let slot_ptr = unsafe { (q.ring_host as *mut u8).add(slot_idx * 64) };
 

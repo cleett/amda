@@ -1,18 +1,20 @@
 # AMDA Engineering Roadmap & Milestones
 
-> **Refined Mission**: **Beat NVIDIA CUDA on TCO & tokens-per-dollar** on memory-capacity and bandwidth-bound AI inference, and **beat AMD ROCm on UX, launch latency, and SKU coverage** via a zero-ROCm pure-Rust `/dev/kfd` + HSA AQL runtime.
+> **Refined Mission**: **Beat NVIDIA CUDA on TCO & tokens-per-dollar** on memory-capacity and bandwidth-bound AI inference, and **beat AMD ROCm on same-GPU decode `tokens/sec` (`$/token`), cloud cold-start TCO, UX, launch latency, and SKU coverage** via a zero-ROCm pure-Rust `/dev/kfd` + HSA AQL runtime.
 
 ---
 
 ## 1. Strategic Wedge & Non-Goals
 
-Broadly beating the full NVIDIA CUDA ecosystem across every closed library (`cuDNN`, `cuFFT`, `cuSPARSE`, `TensorRT-LLM`, arbitrary `cubin`/SASS wheels, multi-node InfiniBand/RDMA training) with a small team is not achievable. AMDA wins by focusing ruthlessly on where AMD hardware already beats NVIDIA on economics:
+Broadly beating the full NVIDIA CUDA ecosystem across every closed library (`cuDNN`, `cuFFT`, `cuSPARSE`, `TensorRT-LLM`, arbitrary `cubin`/SASS wheels, multi-node InfiniBand/RDMA training) with a small team is not achievable. AMDA wins by focusing ruthlessly on where AMD hardware already beats NVIDIA on economics and where stock ROCm leaves real performance and TCO on the table:
 
-1. **Memory-Capacity & Bandwidth Arbitrage (TCO / `$/tok` Edge)**:
+1. **Memory-Capacity & Bandwidth Arbitrage vs. CUDA (TCO / `$/tok` Edge)**:
    - A single **192 GB MI300X** (`gfx942`, 5.3 TB/s HBM3, ~$1.99–$2.59/hr) fits 70B BF16, 70B high-batch/long-context FP8, and 100B–235B quantized MoE models on **1 GPU** instead of forcing 2×–4× 80 GB H100s plus multi-GPU tensor-parallel sync overhead. Similarly, **8× MI300X** (1.536 TB HBM3) fits 405B–671B FP8 models on **1 node**.
    - High-VRAM consumer/workstation RDNA (`RX 7900 XTX`, `RX 9060/9070 XT`) and unified-memory APUs (`Radeon 780M`, **128 GB Strix Halo**) run large local models where ROCm breaks or restricts SKUs.
-2. **ROCm Displacement (UX & Latency Edge)**:
-   - Single compact pure-Rust drop-in bundle (`dist/lib` shims + direct `/dev/kfd` + HSA AQL ring + Tier 0/1 JIT) with **no `/opt/rocm` userspace dependency**, zero GPU allowlists, sub-millisecond cold Tier 0 compilation, and pre-baked AQL graph dispatch.
+2. **ROCm Displacement & Same-GPU `$/token` Edge (Decode TPS, Fusion, & Cold-Start TCO)**:
+   - Direct `/dev/kfd` + pre-baked 64-byte AQL graph dispatch (`<2–5 µs` host launch overhead), eliminating `HIP -> CLR -> ROCr` launch tax across 300–600 per-token decode kernels.
+   - Cross-boundary GEMV/epilogue/RMSNorm/RoPE/SwiGLU fusion ([fusion.rs](../crates/amda-compiler/src/fusion.rs)) and runtime JIT specialization for quantized (`Q4`/`Q8`/`FP8`), MoE small-`M` (`M = 1..16`), and untuned shapes that miss static `Tensile` lookup tables.
+   - Single `<20 MB` pure-Rust drop-in bundle (`dist/lib` shims, zero `/opt/rocm` userspace dependency, zero GPU allowlists), cutting 10–25 GB ROCm container pull and cold-start billing waste during autoscale bursts. *(Scope realism: on large-batch dense BF16/FP8 prefill `M >= 1024`, target **80–90%** of AMD's hand-scheduled `AITER` / `hipBLASLt` assembly rather than competing on prefill peak FLOPs.)*
 
 ### Explicit Non-Goals (MVP → v1.0)
 - **No `cuDNN`, `cuFFT`, or `cuSPARSE` re-implementations** before single-node LLM inference wins.
@@ -24,9 +26,9 @@ Broadly beating the full NVIDIA CUDA ecosystem across every closed library (`cuD
 ## 2. Milestone Progression Overview
 
 ```text
-M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (Unmodified llama.cpp + SDMA) ──► M3 (MFMA/WMMA + HBM Win)
-                                                                                     │
-                                          M5 (Source/Tile + 8x MI300X + Pro) ◄── M4 (All-SKU Package)
+M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (llama.cpp 61-virtual + SDMA) ──► M3a (Decode TCO Win)
+                                                                                       │
+                     M5 (Clang .cu/Tile + 8x MI300X + Pro) ◄── M4 (All-SKU Package) ◄──┴── M3b (Dense Prefill + FA)
 ```
 
 ---
@@ -50,7 +52,7 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (Unmodified llama.cpp 
 
 - **Key Work**:
   - Provision a single-GPU MI300X Droplet (`gfx942`, 192 GB HBM3, 304 CUs, `num_xcc = 8`) on AMD Developer Cloud and run [mi300x_stage1.sh](../scripts/mi300x_stage1.sh).
-  - Validate multi-XCC AQL queue creation (`KfdQueueBufferSizes` with 8× XCC EOP/CWSR alignment and 2× `AQL_QUEUE_MEM` VA reservation), `mem_banks` 192 GiB discovery, coherent doorbell ringing, and `AMDKFD_IOC_ALLOC_MEMORY_OF_GPU` flags on live silicon.
+  - Validate multi-XCC AQL queue creation (`KfdQueueBufferSizes` with 8× XCC EOP/CWSR alignment and 2× `AQL_QUEUE_MEM` VA reservation), `mem_banks` 192 GiB discovery, coherent doorbell ringing, **`GTT | COHERENT | UNCACHED` control rings/signals vs. `VRAM | PUBLIC` HBM allocations**, `read_dispatch_id` wrap backpressure, and `AMDKFD_IOC_ALLOC_MEMORY_OF_GPU` flags on live silicon.
   - Verify both **Tier 1 (`AMDA_TIER=1`)** and **Tier 0 (`AMDA_TIER=0`)** compiled `.text` + `AmdhsaKernelDescriptor` execution (`c_vector_add`, `c_nvcc_abi`, `c_llama_mvp`, `amda demo`).
   - Upgrade `signal_wait` in [kfd.rs](../crates/amda-hal/src/kfd.rs) from pure CPU spin/sleep to hybrid short-spin + `AMDKFD_IOC_WAIT_EVENTS` interrupt blocking, and harden CWSR / fault diagnostics cleanly without hanging the node.
   - Add a **Measured Physical MI300X Hardware** section to [BENCHMARKS.md](BENCHMARKS.md).
@@ -59,52 +61,64 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (Unmodified llama.cpp 
 
 ---
 
-### M2 — Binary Drop-In Parity & Hardware SDMA Engine (Unmodified `llama.cpp`)
-**Goal**: Run an unmodified pre-compiled CUDA application (`llama.cpp`) on MI300X via `LD_LIBRARY_PATH=dist/lib` with hardware DMA memory copies.
+### M2 — Binary Drop-In Parity & Hardware SDMA Engine (`llama.cpp` via PTX)
+**Goal**: Run unmodified `llama.cpp` source built with PTX embedded (`-DCMAKE_CUDA_ARCHITECTURES="61-virtual" -DGGML_CUDA_FORCE_CUBLAS=ON`) on MI300X via `LD_LIBRARY_PATH=dist/lib` with hardware DMA memory copies. *(Defers `sm_80` Tensor-Core `mma.sync` / `cp.async` / `mmq` lowering to M3.)*
 
 - **Key Work**:
   - **Exact CUDA 12 ABI Struct Parity**: Expand [CudaDeviceProp](../crates/amda-cuda/src/types.rs) and [amda_cuda.h](../crates/amda-cuda/include/amda_cuda.h) to match NVIDIA CUDA 12 binary struct offsets/sizes exactly (today's 26-field struct will misalign compiled third-party binaries calling `cudaGetDeviceProperties`).
-  - **Expand C ABI Surface for `llama.cpp`**: Implement missing Driver/Runtime/cuBLAS symbols observed when linking `llama.cpp` (including `cudaStreamBeginCapture` / `EndCapture`, `cudaMemcpy2D` / `cudaMemcpy2DAsync`, `cudaMallocAsync` / `cudaFreeAsync`, `cudaFuncSetAttribute`, `cudaGetSymbolAddress`, `cublasGemmBatchedEx`, and minimal `cublasLt` entrypoints).
+  - **Expand C ABI Surface for `llama.cpp`**: Implement missing Driver/Runtime/cuBLAS symbols observed when linking `llama.cpp` (including `cudaStreamBeginCapture` / `EndCapture`, `cudaGraphExecUpdate`, multi-TU `__cudaRegisterFatBinary`, `cudaMemcpy2D` / `cudaMemcpy2DAsync`, `cudaMallocAsync` / `cudaFreeAsync`, `cudaFuncSetAttribute`, `cudaGetSymbolAddress`, `cublasGemmBatchedEx`, and minimal `cublasLt` entrypoints).
   - **Hardware SDMA Copy Engine**: Replace host-mapped CPU `memcpy` in `KfdBackend::{copy_htod, copy_dtoh, copy_dtod}` ([kfd.rs](../crates/amda-hal/src/kfd.rs))—especially `copy_dtod`'s GPU→host `Vec`→GPU bounce—with real `KFD_IOC_QUEUE_TYPE_SDMA` async hardware DMA packets and signals.
-  - **PTX 8.x & Fatbin Completeness**: Add any missing PTX instructions/modifiers encountered in `llama.cpp` GGML CUDA kernels and Zlib/Zstd decompression in [fatbin.rs](../crates/amda-compiler/src/fatbin.rs).
+  - **Non-Tensor-Core PTX & Fatbin Completeness**: Add any missing PTX `dp4a`/scalar instructions/modifiers encountered in `61-virtual` `llama.cpp` GGML CUDA kernels and Zlib/Zstd decompression in [fatbin.rs](../crates/amda-compiler/src/fatbin.rs).
 - **Exit Gate**:
-  - An **unmodified CUDA-built `llama.cpp` (`llama-cli` / `llama-bench`)** runs a 7B–8B `Q4_0` GGUF model end-to-end on MI300X using `LD_LIBRARY_PATH=dist/lib` with exact/tolerant token output parity against CPU reference.
+  - Unmodified **`llama.cpp` source built with `-DCMAKE_CUDA_ARCHITECTURES="61-virtual" -DGGML_CUDA_FORCE_CUBLAS=ON`** (`llama-cli` / `llama-bench`) runs a 7B–8B `Q4_0` GGUF model end-to-end on MI300X via `LD_LIBRARY_PATH=dist/lib` with token output parity against CPU reference.
   - Hardware SDMA copies achieve **>20 GB/s PCIe H2D/D2H** and **>1 TB/s HBM D2D** (eliminating CPU copy bottlenecks).
 
 ---
 
-### M3 — Matrix Cores (`MFMA` / `WMMA`), FP8, & Bandwidth-Saturating Inference
-**Goal**: Turn hardware specs into real-world speedups—closing the performance gap where scalar PTX GEMMs and PTX 1:1 translation lag H100 and `hipBLASLt`, and proving lower `$/token` than H100.
+### M3a — Decode-First TCO Win (Quantized/FP8 GEMV, Baseline MFMA/WMMA, & Fusion)
+**Goal**: Ship the core memory-bandwidth and dispatch-latency wins first—beating H100 on >80 GB `$/token` and beating stock ROCm on launch- and intermediate-HBM-bound decode without blocking on year-long dense prefill scheduling.
 
 - **Key Work**:
-  - **Tile IR + Hardware Matrix Lowering (`amda-compiler`)**: Add first-class `MFMA` (`v_mfma_*` + AGPR allocation) for CDNA (`gfx908`/`90a`/`942`), `WMMA` for RDNA3/4 (`gfx11xx`/`12xx`), and native FP8 (`e4m3`/`e5m2` on `gfx942`/`12xx`), with XCC-aware tile swizzling and double-buffered LDS staging.
-  - **High-Throughput GEMM & Attention Pack (`amda-cublas` / runtime library)**: Replace the scalar 16×16 triple-loop GEMM in [crates/amda-cublas/src/kernels.rs](../crates/amda-cublas/src/kernels.rs) with tuned LDS-tiled MFMA/WMMA GEMMs (BF16/FP16/FP8), bandwidth-saturating Q4/Q8/FP8 quantized GEMV kernels, and fused FlashAttention (prefill + GQA decode).
-  - **Expanded Cross-Kernel Fusion ([fusion.rs](../crates/amda-compiler/src/fusion.rs))**: Lift elementwise-only restrictions to support **GEMM + bias/activation epilogue fusion**, RMSNorm/RoPE fusion, and shared-memory/reduction fusion inside `ExecutionGraph`.
-  - **Low-Latency AQL Graph Replay**: Optimize pre-baked AQL ring packet submission to **<5 µs host dispatch overhead** per step so small-batch LLM decode is hardware-bound rather than CPU-bound.
+  - **Baseline Tile IR + Matrix Lowering (`amda-compiler`)**: Add first-class `MFMA` (`v_mfma_*` + AGPR allocation) for CDNA (`gfx908`/`90a`/`942`), `WMMA` for RDNA3/4 (`gfx11xx`/`12xx`), native FP8 (`e4m3`/`e5m2`), and `sm_80` `mma.sync`/`mmq` legalization for `llama.cpp` (`50–65%` of `hipBLASLt` baseline LDS-tiled GEMM).
+  - **Bandwidth-Saturating Decode Kernels (`amda-cublas` / runtime)**: Replace the scalar 16×16 triple-loop GEMM in [crates/amda-cublas/src/kernels.rs](../crates/amda-cublas/src/kernels.rs) with tuned LDS-tiled MFMA/WMMA GEMMs plus bandwidth-saturating Q4/Q8/FP8 quantized GEMV kernels tailored for small-`M` (`M = 1..16`) and MoE shapes.
+  - **Decode Fusion & `<2–5 µs` AQL Graphs ([fusion.rs](../crates/amda-compiler/src/fusion.rs))**: Expand cross-kernel fusion to **GEMV + bias/activation epilogue, RMSNorm, and RoPE/SwiGLU** inside pre-baked AQL `ExecutionGraph` replay (`<2–5 µs` host dispatch overhead per step).
 - **Exit Gate**:
-  - AMDA `BF16`/`FP16`/`FP8` GEMMs achieve **≥70–80% of stock `hipBLASLt` TFLOP/s** across core LLM shapes.
-  - Single-GPU MI300X decode achieves **≥75% of 5.3 TB/s HBM3 bandwidth (~4.0 TB/s)** on 70B quantized/BF16 workloads.
-  - **Headline TCO Proof**: On a workload exceeding 80 GB VRAM (e.g., Llama-3-70B BF16 or high-batch/long-context 70B FP8), **1× MI300X via AMDA (@ $1.99/hr)** delivers **≥25–35% better tokens/sec per dollar** than **2× H100 (80 GB)**, and matches or beats stock ROCm `llama.cpp` with **zero `/opt/rocm` userspace installed**.
+  - **Baseline Matrix & Graph Speed**: AMDA baseline LDS-tiled BF16/FP16/FP8 GEMMs reach **≥50–65% of `hipBLASLt`**, with `<2–5 µs` AQL graph launch overhead.
+  - **70B Weight-Streaming Decode (MI300X HBM3 Physics)**: On 70B `Q4`/`BF16` decode, achieve **~3.8–4.2 TB/s** sustained weight streaming (**≥98–105% of stock `llama.cpp-hip`**, bounded realistically by MI300X's ~4.1–4.5 TB/s STREAM Triad ceiling) with zero `/opt/rocm` userspace installed, and deliver **≥25–35% better tokens/sec per dollar** on **1× MI300X (@ $1.99/hr)** vs. **2× H100 (80 GB)**.
+  - **Small-Model / Fused Multi-Op Decode (7B–14B, MoE small-`M`)**: **Beat stock ROCm (`llama.cpp-hip`) by ≥15–25%** on `tokens/sec` (`$/token`) where AQL launch tax elimination and intermediate HBM fusion dominate.
+
+---
+
+### M3b — Dense Prefill & FlashAttention Optimization
+**Goal**: Close the dense compute-bound prefill and long-context attention gap without delaying M3a's decode TCO release.
+
+- **Key Work**:
+  - **LLVM MFMA Scheduling & Warp-Pipelining**: Implement wave-group pipelining, `amdgcn_sched_group_barrier` / `iglp_opt` hints, LDS bank-conflict swizzling, and shape autotuning to break LLVM AMDGPU scheduler MFMA stalls (or expose an optional opt-in `hipBLASLt` prefill delegate while native Tile IR matures).
+  - **Fused FlashAttention & Full GEMM+Epilogue Fusion**: Add tiled MFMA/WMMA FlashAttention (prefill + GQA decode) and GEMM+epilogue fusion in [fusion.rs](../crates/amda-compiler/src/fusion.rs).
+- **Exit Gate**:
+  - AMDA `BF16`/`FP16`/`FP8` large dense prefill GEMMs (`M >= 1024`) achieve **≥75–85% of stock `hipBLASLt` / `AITER` TFLOP/s** (natively or with optional prefill delegate), and FlashAttention matches or beats ROCm `llama.cpp` TTFT cleanly.
 
 ---
 
 ### M4 — Zero-Allowlist Multi-SKU Distribution (`RDNA3/4` & `128 GB Strix Halo`)
-**Goal**: Ship one tiny portable runtime that works uniformly across datacenter CDNA, consumer RDNA3/4, and unified-memory APUs—where ROCm packaging and SKU allowlists create constant user friction.
+**Goal**: Ship a compact two-layer portable runtime that works uniformly across datacenter CDNA, consumer RDNA3/4, and unified-memory APUs—eliminating ROCm's 10–25 GB containers and SKU allowlists.
 
 - **Key Work**:
   - Hardware validation across **4 ISA families** on live Linux `/dev/kfd`: `gfx942` (MI300X/MI325X), `gfx1100` (RX 7900 XTX), `gfx1200`/`1201` (RX 9060/9070 XT), and `gfx1103`/`gfx1151` (Radeon 780M / 128 GB Strix Halo APUs).
   - Implement true **zero-copy unified-memory (`GTT | COHERENT`) pointer aliasing** on APUs (`unified_memory = true`) to skip `HtoD`/`DtoH` staging copies entirely.
-  - Package a single reproducible **`<20 MB` tarball / OCI runtime layer** (no multi-GB `/opt/rocm` install) usable by local devs and cloud Droplet images.
+  - **Two-Layer Distribution (resolves LLVM size vs. `<20 MB` core)**:
+    - **`<20 MB` Core Runtime** (`dist/lib` shims + `/dev/kfd` HAL + pre-compiled embedded HSACOs for built-in MFMA/WMMA/GEMV/Attention kernels + pure-Rust Tier 0 JIT for user PTX; **no `/opt/rocm`**).
+    - **Optional Tier 1 LLVM Sidecar**: Discovers host LLVM (`opt`/`llc`/`ld.lld`) or ships an optional stripped AMDGPU-only compiler sidecar (`~50–80 MB`) when dynamic Tier 1 LLVM promotion of arbitrary user PTX is desired.
 - **Exit Gate**:
-  - One unified drop-in artifact passes `c_llama_mvp` + `llama.cpp` inference benchmarks across CDNA3, RDNA3, RDNA4, and RDNA3/3.5 APU Linux boxes with **zero** `HSA_OVERRIDE_GFX_VERSION` or manual SKU environment hacks.
+  - The **`<20 MB` core drop-in package** passes `c_llama_mvp` + `llama.cpp` inference benchmarks across CDNA3, RDNA3, RDNA4, and RDNA3/3.5 APU Linux boxes with **zero** `HSA_OVERRIDE_GFX_VERSION`, **zero** `/opt/rocm` userspace libraries, and zero manual SKU overrides.
 
 ---
 
-### M5 — Source/Tile Frontend, 8× MI300X Intra-Node xGMI, & Open-Core Commercialization
-**Goal**: Eliminate `nvcc` EULA & closed-SASS walls permanently, unlock 405B–671B FP8 single-node MI300X serving, and establish clean open-core commercial boundaries.
+### M5 — Upstream Clang `.cu` / Tile Frontend, 8× MI300X xGMI, & Commercialization *(Post-M3 / Funded)*
+**Goal**: Permanently eliminate `nvcc` EULA & closed-SASS walls, unlock 405B–671B FP8 single-node MI300X serving (`~$16–$24/hr` test nodes), and establish clean open-core commercial boundaries.
 
 - **Key Work**:
-  - **Source / Tile Frontend**: Add direct `.cu` ingestion (Clang AMDGPU frontend) and/or Python/Triton Tile IR lowering so enterprise users compile CUDA/Tile kernels directly into AMDA without invoking NVIDIA's `nvcc` toolchain (resolving both closed-SASS kernels and NVIDIA's `nvcc`-output EULA clause).
+  - **Upstream Clang AMDGPU / Triton Tile Frontend**: Integrate **upstream Clang's AMDGPU CUDA driver** (and/or Triton/Tile IR lowering)—explicitly *not* a custom C++20 `.cu` parser—so enterprise users compile CUDA/Tile source directly into AMDA without invoking NVIDIA's `nvcc` (resolving both closed-SASS kernels and NVIDIA's `nvcc`-output EULA clause).
   - **Multi-GPU Intra-Node xGMI (`amda-nccl` subset)**: Add multi-device `KFD` peer GPUVM mapping (`map_memory_to_gpu` across multiple `gpu_id`s), P2P DMA, and fast xGMI `AllReduce`/`AllGather` primitives for **8× MI300X** nodes (1.536 TB HBM3).
   - **Open-Core Product Boundary**:
     - *Apache-2.0 Open Core*: `amda-elf`, `amda-hal`, `amda-compiler` Tier 0/1 & fusion core, `amda-runtime`, `amda-cuda`, `amda-nvml`, baseline `amda-cublas`, CLI.
@@ -118,8 +132,8 @@ M0 (Done) ──► M1 (Live MI300X Bringup) ──► M2 (Unmodified llama.cpp 
 
 | Structural Constraint | Why Naive Clones Fail | AMDA Mitigation Milestone |
 | :--- | :--- | :--- |
-| **Closed SASS-only `cubin`s** | PTX translators cannot run precompiled `cubin` math kernels | **M2/M3/M5**: Intercept `cublas`/`cublasLt`/NVML ABI + source `.cu`/Tile frontend |
-| **Wave32 (`NVIDIA`) vs. Wave64 (`CDNA`)** | Wave-32 ballot/shuffle emulation wastes 50% lanes or adds shifts | **M3**: Native MFMA/Tile IR & native Wave64 library kernels for heavy math (keep Wave32 legalization for compatibility) |
-| **Hopper `WGMMA + TMA` vs. `MFMA + LDS`** | 1:1 PTX `mma` lowering stalls without hardware TMA | **M3**: Explicit double-buffered LDS + AGPR + XCC-swizzled MFMA schedules |
-| **`/dev/kfd` Hangs & CWSR Complexity** | Missing CWSR traps, pointer races, or CPU copies hang/starve silicon | **M1/M2**: Multi-XCC CWSR/EOP sizing, `WAIT_EVENTS`, hardware SDMA engine, strict watchdog/diagnostics |
-| **NVIDIA CUDA EULA Clause** | Prohibits translating `nvcc` output to non-NVIDIA platforms | **M0/M5**: Strict clean-room open-core stack today + `.cu`/Tile source frontend so enterprise workloads bypass `nvcc` |
+| **Closed SASS-only `cubin`s** | PTX translators cannot run precompiled `cubin` math kernels | **M2/M3/M5**: Intercept `cublas`/`cublasLt`/NVML ABI + upstream Clang `.cu` / Tile frontend |
+| **Wave32 (`NVIDIA`) vs. Wave64 (`CDNA`)** | Wave-32 ballot/shuffle emulation wastes 50% lanes or adds shifts | **M3a**: Native MFMA/Tile IR & native Wave64 library kernels for heavy math (keep Wave32 legalization for compatibility) |
+| **Hopper `WGMMA + TMA` vs. `MFMA + LDS`** | 1:1 PTX `mma` lowering stalls without hardware TMA; LLVM scheduler stalls MFMA chains | **M3a/M3b**: Explicit double-buffered LDS + AGPR in M3a, then warp-pipelining / `sched_group_barrier` or optional `hipBLASLt` prefill delegate in M3b |
+| **`/dev/kfd` Hangs & CWSR Complexity** | Missing CWSR traps, uncached/coherent domain bugs, ring overwrites, or CPU copies hang/starve silicon | **M1/M2**: Multi-XCC CWSR/EOP sizing, `GTT \| COHERENT \| UNCACHED` control rings, `read_dispatch_id` backpressure, `WAIT_EVENTS`, hardware SDMA engine |
+| **NVIDIA CUDA EULA Clause** | Prohibits translating `nvcc` output to non-NVIDIA platforms | **M0/M5**: Strict clean-room open-core stack today + upstream Clang `.cu` / Tile frontend so enterprise workloads bypass `nvcc` |
